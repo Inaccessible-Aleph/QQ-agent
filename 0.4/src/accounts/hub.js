@@ -200,9 +200,11 @@ export function createHub({ manager, log = () => {} } = {}) {
         status,
         protocolEnd: { reachable, url: firstUrl },
         usage: live?.usage || null,
-        diagnosis: hasEndpoint
-          ? (live?.diagnosis || (status.connected ? '' : status.lastError || ''))
-          : '未配置 OneBot 地址：打开控制台 → 设置 → OneBot 填写'
+        diagnosis: !hasEndpoint
+          ? '未配置 OneBot 地址：打开控制台 → 设置 → OneBot 填写'
+          : (reachable === false
+            ? '协议端端口未监听：请确认协议端已运行，且该 QQ 已登录'
+            : (live?.diagnosis || (status.connected ? '' : status.lastError || '')))
       };
     }));
   }

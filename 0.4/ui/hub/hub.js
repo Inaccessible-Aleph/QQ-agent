@@ -129,7 +129,7 @@
     const usage = account.usage;
     const usageText = usage ? `${formatMoney(usage.cost)} · ${usage.runs} 次` : (account.status.running ? '读取中…' : '—');
     const uptime = account.status.running ? formatUptime(account.status.startedAt) : '';
-    const error = account.status.lastError || account.diagnosis || '';
+    const error = account.diagnosis || account.status.lastError || '';
     const disabled = busy ? ' disabled' : '';
 
     return `
