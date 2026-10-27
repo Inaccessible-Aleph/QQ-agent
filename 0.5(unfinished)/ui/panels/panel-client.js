@@ -1,10 +1,14 @@
 import {setRefreshInterval} from './refresh-policy.js';
 import {panelApiRequestTimeout} from './request-timeouts.js';
 import {resetDestructiveActions} from './destructive-action.js';
+import {createVisualPicker} from './visual-picker.js';
 
-let nonce='',panel='',sequence=0,leaving=false,leaveId=null,initialViewState={},settingsSave=false;
+let nonce='',panel='',sequence=0,leaving=false,leaveId=null,initialViewState={},settingsSave=false,contentAnnounced=false;
 const waiters=new Map(),events=new Set(),beforeLeaveHandlers=new Set(),leaveHandlers=new Set(),stateProviders=new Map();
 const shellOrigin='*'; // sandbox iframe has opaque origin; source + panel + nonce remain mandatory validation.
+const visualPicker=createVisualPicker(document,{select:selection=>{if(nonce&&!leaving)void rpc('appearance.select',selection).catch(()=>{});}});
+let visualEditorState=null,visualEditorTicket=null;
+document.addEventListener('keydown',event=>{if(event.key==='Escape'&&visualEditorState?.active===true&&visualEditorState.picking===false){event.preventDefault();event.stopPropagation();void rpc('appearance.select',{exit:true}).catch(()=>{});}});
 const ready=new Promise((resolve,reject)=>{const timer=setTimeout(()=>reject(new Error('安全握手超时')),15000);window.addEventListener('panel-ready',()=>{clearTimeout(timer);resolve();},{once:true});});
 function settle(id,kind,value){const waiter=waiters.get(id);if(!waiter)return;clearTimeout(waiter.timer);waiters.delete(id);waiter[kind](value);}
 function send(message){parent.postMessage({...message,meta:{nonce,panel}},shellOrigin);}
@@ -25,6 +29,8 @@ window.addEventListener('message',event=>{
     if(m.params?.name==='refresh-policy')setRefreshInterval(m.params.payload?.interval);
     // 主题推送由 theme.js 统一消费（shell 在面板 ready 时推一次，之后变更再广播）。
     if(m.params?.name==='theme')window.dispatchEvent(new CustomEvent('qq-theme',{detail:m.params.payload}));
+    if(m.params?.name==='visual-style')window.dispatchEvent(new CustomEvent('qq-visual-style',{detail:m.params.payload}));
+    if(m.params?.name==='visual-editor'){const state=m.params.payload;visualEditorState=state;visualPicker.set(state?.active===true&&state?.picking===true);visualPicker.preview(state?.page===panel?state.state:null);if(state?.command==='parent'&&state?.page===panel)visualPicker.parent();if(state?.active&&typeof state.ticket==='string'&&state.ticket!==visualEditorTicket){visualEditorTicket=state.ticket;void rpc('appearance.select',{ack:state.ticket}).catch(()=>{});}}
     for(const fn of events)fn(m.params?.name,m.params?.payload);
     return;
   }
@@ -52,10 +58,18 @@ export async function rpc(method,params={},timeout=15000){
   await ready;
   return new Promise((resolve,reject)=>{const id=`p${++sequence}`,timer=setTimeout(()=>settle(id,'reject',new Error('请求超时')),timeout);waiters.set(id,{resolve,reject,timer});send({jsonrpc:'2.0',id,method,params});});
 }
+/** First real content (including a visible error), separate from the secure handshake. */
+export async function contentReady(){
+  try{await ready;}catch{return false;}
+  if(leaving||contentAnnounced)return false;
+  contentAnnounced=true;send({jsonrpc:'2.0',method:'panel.contentReady'});return true;
+}
 export const request=(method,path,body,query)=>rpc('api.request',{method,path,body,query},panelApiRequestTimeout(method,path));
 /** 面板向宿主申请换肤：shell 校验后落地并广播（面板自身无宿主存储与 DOM 的访问权）。 */
 export const applyHostTheme=(theme)=>rpc('theme.apply',{theme});
+export const openVisualEditor=()=>rpc('appearance.open');
 export const openCommunityPage=target=>rpc('ui.openExternal',{target});
+export const openLocalProtocolPage=(target,id)=>rpc('ui.openExternal',{target,...(id?{id}:{})});
 export const consoleUpdate=payload=>rpc('console.update',payload);
 export const openConsoleTokenManager=()=>rpc('console.manageToken');
 export const openCaptchaDiagnostics=()=>rpc('ui.captchaDiagnostics');

@@ -1,166 +1,131 @@
-// 单个 QQ 号的隔离运行空间（0.5 内核版）。
-//
-// 与 0.4 的 worker 思路相同：每个号一个 worker_threads 线程、自己的
-// QQ_AGENT_DATA_DIR 与 QQ_AGENT_PORT；区别是 0.5 的内核本身就用工厂装配，
-// 所以这里直接 createApplication({ env })，不需要改任何模块级常量。
-import { parentPort, workerData } from 'node:worker_threads';
-import fs from 'node:fs';
+import fs from 'node:fs/promises';
 import path from 'node:path';
+import crypto from 'node:crypto';
+import { fileURLToPath } from 'node:url';
+import { createApplication } from '../kernel/composition.js';
 
-if (!parentPort) throw new Error('accounts/worker.js 只能由账号中心以 worker_threads 方式启动');
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const QQ = /^[0-9]{5,10}$/;
+const tokenValid = value => typeof value === 'string' && /^[A-Za-z0-9_-]{16,4096}$/.test(value);
+const rejected = () => { throw Object.assign(new Error('协议端由主客户端统一管理。'), { status: 409, expose: true }); };
+const inertProtocols = ({ appRoot }) => {
+  const snapshot = () => ({ root: path.join(appRoot, 'protocols'), providers: [], running: null, settings: { autoStart: false } });
+  return { start: async () => {}, close: async () => {}, scan: async () => snapshot(), snapshot,
+    launch: rejected, stop: rejected, saveSettings: rejected, output: () => ({ text: '' }), loginContext: () => null, commitLoginConnection: rejected };
+};
+const inertLogin = () => ({ get: async () => ({ provider: null, source: 'worker', stage: 'unavailable', processes: [], qrImage: '', account: null }),
+  connect: rejected, refresh: rejected, inject: rejected, closeView: () => ({ ok: true }), visibility: () => ({ ok: true }), close() {} });
 
-const meta = workerData || {};
-const dataDir = String(meta.dataDir || '');
-const accountId = String(meta.id || '');
-const accountName = String(meta.name || '');
-const hubPort = Number(meta.hubPort) || 0;
-const preferredPort = Number(meta.port) || 0;
-if (!dataDir || !accountId) throw new Error('账号 worker 缺少 dataDir/id');
-
-process.env.QQ_AGENT_DATA_DIR = dataDir;
-process.env.QQ_AGENT_ACCOUNT_ID = accountId;
-process.env.QQ_AGENT_ACCOUNT_NAME = accountName;
-if (hubPort) process.env.QQ_AGENT_HUB_PORT = String(hubPort);
-// 账号中心已经为该号分配了控制台端口；用 env 覆盖可以保证端口就是卡片上那个，
-// 不会被其它号或旧配置顶到 3211+。
-if (preferredPort) process.env.QQ_AGENT_PORT = String(preferredPort);
-
-const STATUS_FILE = path.join(dataDir, 'account-runtime.json');
-const startedAt = Date.now();
-let app = null;
-let port = 0;
-let stopping = false;
-let statusTimer = null;
-let lastStatusLine = '';
-
-function writeStatusFile(status) {
+async function plainDirectory(target) {
+  const absolute = path.resolve(target), parsed = path.parse(absolute); let current = parsed.root;
+  for (const part of absolute.slice(parsed.root.length).split(path.sep).filter(Boolean)) {
+    current = path.join(current, part); const stat = await fs.lstat(current);
+    if (stat.isSymbolicLink() || !stat.isDirectory()) throw new Error('账号工作区路径不可用。');
+  }
+}
+function safeConnection(onebot) {
   try {
-    fs.mkdirSync(dataDir, { recursive: true });
-    const tmp = `${STATUS_FILE}.${process.pid}.${Date.now()}.tmp`;
-    fs.writeFileSync(tmp, JSON.stringify(status, null, 2), 'utf8');
-    fs.renameSync(tmp, STATUS_FILE);
-  } catch { /* 诊断文件失败不影响运行 */ }
+    const http = new URL(onebot.httpUrl), ws = new URL(onebot.wsUrl);
+    if (http.protocol !== 'http:' || ws.protocol !== 'ws:' || http.hostname !== '127.0.0.1' || ws.hostname !== '127.0.0.1'
+      || http.username || http.password || ws.username || ws.password || http.search || ws.search || http.hash || ws.hash
+      || http.pathname !== '/' || ws.pathname !== '/' || !http.port || !ws.port || http.port === ws.port
+      || !tokenValid(onebot.accessToken) || onebot.httpAccessToken !== onebot.accessToken) throw Error();
+    return { httpUrl: http.origin, wsUrl: ws.origin, accessToken: onebot.accessToken, httpAccessToken: onebot.httpAccessToken };
+  } catch { throw new Error('账号连接参数无效。'); }
 }
 
-function snapshot(extra = {}) {
-  const cfg = (() => { try { return app?.config?.get?.() || {}; } catch { return {}; } })();
-  const transport = (() => { try { return app?.transport?.status?.() || {}; } catch { return {}; } })();
-  const orch = (() => { try { return app?.orchestrator?.status?.() || {}; } catch { return {}; } })();
-  return {
-    id: accountId,
-    name: accountName,
-    running: !!app,
-    stopping,
-    port,
-    pid: process.pid,
-    startedAt,
-    updatedAt: Date.now(),
-    connected: !!transport.connected,
-    everConnected: !!transport.everConnected,
-    lastError: transport.error ? String(transport.error) : '',
-    selfId: String(transport.selfId || app?.transport?.selfId || ''),
-    nickname: String(transport.selfNickname || app?.transport?.selfNickname || ''),
-    model: cfg.api?.model || '',
-    provider: cfg.api?.provider || '',
-    paused: !!orch.paused,
-    allowGroups: Array.isArray(cfg.allow?.groups) ? cfg.allow.groups.length : 0,
-    allowPrivate: Array.isArray(cfg.allow?.private) ? cfg.allow.private.length : 0,
-    allowAll: cfg.allowAllWhenEmpty === true,
-    onebot: {
-      wsUrl: String(cfg.onebot?.wsUrl || ''),
-      httpUrl: String(cfg.onebot?.httpUrl || ''),
-      hasToken: Boolean(cfg.onebot?.accessToken),
-      hasHttpToken: Boolean(cfg.onebot?.httpAccessToken || cfg.onebot?.accessToken)
-    },
-    dataDir,
-    ...extra
+/** Dedicated Node child entry. It never creates an Electron app, window, tray or protocol process. */
+export function startAccountWorker({ runtimeProcess = process, createApplicationImpl = createApplication, exit = code => process.exit(code) } = {}) {
+  let kernel = null, generation = '', expectedAccount = '', initialized = false, stopping = false, stopPromise = null, statusTimer = null;
+  const disposers = [];
+  const send = value => {
+    if (!runtimeProcess.connected || typeof runtimeProcess.send !== 'function') return;
+    try { runtimeProcess.send({ ...value, generation }, () => {}); } catch { /* Parent shutdown owns this child. */ }
   };
-}
-
-function publish(extra = {}, { forceFile = false } = {}) {
-  const status = snapshot(extra);
-  try { parentPort.postMessage({ type: 'status', status }); } catch { /* 父线程可能已退出 */ }
-  const line = JSON.stringify({ ...status, updatedAt: 0 });
-  if (forceFile || line !== lastStatusLine) {
-    lastStatusLine = line;
-    writeStatusFile(status);
+  const currentIdentity = () => {
+    const status = kernel?.transport?.status?.() || {}, candidate = status.selfId ?? status.userId ?? status.user_id ?? kernel?.transport?.selfId;
+    return { status, accountId: QQ.test(String(candidate ?? '')) ? String(candidate) : '' };
+  };
+  const reportStatus = () => {
+    if (!kernel || stopping) return;
+    const identity = currentIdentity();
+    // Stop wrong-account work synchronously; metadata batching must not delay this guard.
+    if (identity.status.connected === true && identity.accountId !== expectedAccount) kernel.orchestrator?.pause?.();
+    if (statusTimer) return;
+    statusTimer = setTimeout(() => {
+      statusTimer = null; if (!kernel || stopping) return;
+      const { status, accountId } = currentIdentity();
+      if (status.connected === true && accountId !== expectedAccount) kernel.orchestrator?.pause?.();
+      send({ type: 'account.status', connected: status.connected === true, accountId,
+        nickname: String(status.selfNickname ?? status.nickname ?? kernel.transport?.selfNickname ?? '').replace(/[\x00-\x1f\x7f]/g, '').slice(0, 80),
+        paused: kernel.orchestrator?.status?.()?.paused !== false });
+    }, 40); statusTimer.unref?.();
+  };
+  async function stop(code = 0) {
+    if (stopPromise) return stopPromise; stopping = true; clearTimeout(statusTimer);
+    return stopPromise = (async () => {
+      for (const dispose of disposers.splice(0)) try { dispose(); } catch {}
+      try { await kernel?.stop?.(); } catch { code = 1; }
+      send({ type: 'account.stopped' }); exit(code);
+    })();
   }
-}
-
-function log(...args) {
-  const line = args.map((a) => (typeof a === 'string' ? a : JSON.stringify(a))).join(' ');
-  try { parentPort.postMessage({ type: 'log', line }); } catch { /* ignore */ }
-  console.log(`[账号 ${accountName || accountId}] ${line}`);
-}
-
-async function boot() {
-  log(`启动中（数据目录 ${dataDir}）`);
-  const { createApplication } = await import('../kernel/composition.js');
-  app = await createApplication({
-    headless: true,
-    env: {
-      ...process.env,
-      QQ_AGENT_DATA_DIR: dataDir,
-      QQ_AGENT_PORT: preferredPort ? String(preferredPort) : String(process.env.QQ_AGENT_PORT || '')
+  async function initialize(message) {
+    if (initialized || stopping) return; initialized = true;
+    if (!UUID.test(message.generation || '') || !UUID.test(message.workspaceId || '') || !QQ.test(message.accountId || '')
+      || !tokenValid(message.serverToken) || runtimeProcess.env.QQ_AGENT_ACCOUNTS_CHILD !== '1'
+      || runtimeProcess.env.QQ_AGENT_ACCOUNT_ID !== message.accountId) throw Error('账号启动身份无效。');
+    generation = message.generation; expectedAccount = message.accountId;
+    for (const [field, variable] of [['dataDir', 'QQ_AGENT_DATA_DIR'], ['extensionRoot', 'QQ_AGENT_EXTENSION_ROOT'], ['cacheRoot', 'QQ_AGENT_RUNTIME_CACHE_ROOT']]) {
+      if (typeof message[field] !== 'string' || path.resolve(message[field]) !== path.resolve(runtimeProcess.env[variable] || '')) throw Error('账号工作区身份无效。');
+      await plainDirectory(message[field]);
     }
-  });
-  port = await app.start();
-  writeStatusFile(snapshot());
-  parentPort.postMessage({ type: 'ready', port, status: snapshot() });
-  statusTimer = setInterval(() => publish(), 2000);
-  statusTimer.unref?.();
-  log(`已就绪：http://127.0.0.1:${port}/`);
+    await plainDirectory(message.appRoot);
+    const dataParent = path.dirname(path.resolve(message.dataDir));
+    if (path.basename(dataParent) !== message.workspaceId || path.dirname(path.resolve(message.extensionRoot)) !== dataParent
+      || path.dirname(path.resolve(message.cacheRoot)) !== dataParent) throw Error('账号工作区边界无效。');
+    kernel = await createApplicationImpl({ appRoot: path.resolve(message.appRoot), env: runtimeProcess.env, headless: false,
+      components: { 'runtime.migration.detect': () => ({ eligible: false, reason: '账号工作区不自动迁移其他账号数据' }),
+        'runtime.localProtocols': inertProtocols, 'runtime.protocolLogin': inertLogin } });
+    if (stopping) { await kernel.stop(); return; }
+    kernel.config.update({ server: { token: message.serverToken, port: 0, autoStart: false }, localProtocols: { autoStart: false } });
+    kernel.orchestrator.pause();
+    let lastToken = message.serverToken;
+    disposers.push(kernel.config.onChange(() => {
+      if (stopping) return;
+      const token = kernel.config.get().server?.token;
+      if (!tokenValid(token)) { kernel.config.update({ server: { token: crypto.randomBytes(32).toString('hex') } }); return; }
+      if (token !== lastToken) { lastToken = token; send({ type: 'account.credential', token }); }
+      reportStatus();
+    }));
+    for (const name of ['onebot.status', 'status']) disposers.push(kernel.bus.on(name, reportStatus, { internal: true }));
+    const port = await kernel.start();
+    if (stopping) { await kernel.stop(); return; }
+    send({ type: 'account.ready', port }); reportStatus();
+  }
+  const onMessage = message => {
+    if (!message || typeof message !== 'object') return;
+    if (message.type === 'account.initialize') { void initialize(message).catch(async () => { send({ type: 'account.error' }); await stop(1); }); return; }
+    if (message.type === 'account.generation' && UUID.test(message.generation || '')) { generation = message.generation; return; }
+    if (message.generation !== generation) return;
+    if (message.type === 'account.stop') { void stop(); return; }
+    if (message.type === 'account.configure' && kernel && !stopping && UUID.test(message.requestId || '')) {
+      try { kernel.config.update({ onebot: safeConnection(message.onebot) }); send({ type: 'account.response', requestId: message.requestId, ok: true }); }
+      catch { send({ type: 'account.response', requestId: message.requestId, ok: false }); }
+    }
+    if (message.type === 'account.pause' && kernel && !stopping && UUID.test(message.requestId || '') && typeof message.paused === 'boolean') {
+      try {
+        const identity = currentIdentity();
+        if (!message.paused && (identity.status.connected !== true || identity.accountId !== expectedAccount)) throw new Error('账号身份尚未就绪或已变化。');
+        message.paused ? kernel.orchestrator.pause() : kernel.orchestrator.resume(); reportStatus();
+        send({ type: 'account.response', requestId: message.requestId, ok: true });
+      } catch { send({ type: 'account.response', requestId: message.requestId, ok: false }); }
+    }
+  };
+  runtimeProcess.on('message', onMessage);
+  const stopSignal = () => { void stop(); }, fatal = () => { send({ type: 'account.error' }); void stop(1); };
+  for (const signal of ['disconnect', 'SIGINT', 'SIGTERM']) runtimeProcess.once(signal, stopSignal);
+  for (const signal of ['uncaughtException', 'unhandledRejection']) runtimeProcess.on(signal, fatal);
+  return { stop, get kernel() { return kernel; } };
 }
 
-parentPort.on('message', async (msg) => {
-  if (!msg || typeof msg !== 'object') return;
-  if (msg.type === 'stop') {
-    if (stopping) return;
-    stopping = true;
-    if (statusTimer) clearInterval(statusTimer);
-    try {
-      publish({ stopping: true }, { forceFile: true });
-      await app?.stop?.();
-      writeStatusFile(snapshot({ running: false, stopping: false, stoppedAt: Date.now() }));
-      parentPort.postMessage({ type: 'stopped' });
-    } catch (error) {
-      parentPort.postMessage({ type: 'stopped', error: String(error?.message ?? error) });
-    }
-    setTimeout(() => process.exit(0), 50);
-    return;
-  }
-  if (msg.type === 'pause') {
-    try {
-      if (msg.value) app?.orchestrator?.pause?.();
-      else app?.orchestrator?.resume?.({ skipBacklog: false });
-    } catch { /* ignore */ }
-    publish({}, { forceFile: true });
-    return;
-  }
-  if (msg.type === 'get-status') {
-    publish({}, { forceFile: true });
-    return;
-  }
-  if (msg.type === 'config' && msg.patch && typeof msg.patch === 'object') {
-    try {
-      // 0.5 的配置写入走 runtime.config 组件；优先用内核暴露的 update 方法。
-      if (typeof app?.config?.update === 'function') app.config.update(msg.patch);
-      else if (typeof app?.config?.set === 'function') app.config.set(msg.patch);
-      publish({}, { forceFile: true });
-      parentPort.postMessage({ type: 'config-applied' });
-    } catch (error) {
-      parentPort.postMessage({ type: 'error', error: String(error?.message ?? error) });
-    }
-  }
-});
-
-boot().catch((error) => {
-  const message = String(error?.stack ?? error?.message ?? error);
-  writeStatusFile(snapshot({ running: false, error: message, updatedAt: Date.now() }));
-  try { parentPort.postMessage({ type: 'error', error: message }); } catch { /* ignore */ }
-  setTimeout(() => process.exit(1), 100);
-});
-
-process.on('exit', () => {
-  try { writeStatusFile(snapshot({ running: false, stoppedAt: Date.now() })); } catch { /* ignore */ }
-});
+if (process.argv[1] && path.resolve(process.argv[1]) === path.resolve(fileURLToPath(import.meta.url))) startAccountWorker();

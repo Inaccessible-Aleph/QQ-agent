@@ -12,6 +12,10 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { registerLocalProtocolRoutes } from '../src/console/local-protocols.js';
+import { registerAccountRoutes } from '../src/accounts/routes.js';
+import {registerLocalFontRoutes} from '../src/console/local-fonts.js';
+import {registerGroupManagementRoutes} from '../src/console/group-management.js';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const manifest = JSON.parse(fs.readFileSync(path.join(root, 'ui/panels/manifest.json'), 'utf8'));
@@ -63,7 +67,8 @@ console.log('=== B. 声明的每条端点后端都真实存在 ===');
   // routes.js + panel-adapters.js 两处都可能注册路由
   // （/api/plugins/:id/permissions 就注册在 panel-adapters.js，只扫 routes.js 会误报缺失）。
   const src = fs.readFileSync(path.join(root, 'src/console/routes.js'), 'utf8')
-    + fs.readFileSync(path.join(root, 'src/console/panel-adapters.js'), 'utf8');
+    + fs.readFileSync(path.join(root, 'src/console/panel-adapters.js'), 'utf8')
+    + fs.readFileSync(path.join(root, 'src/console/background-uploads.js'), 'utf8');
 
   /** 从 pos 起读一个 JS 字面量（字符串或正则），返回 { raw, next }。 */
   function readLiteral(s, pos) {
@@ -122,6 +127,19 @@ console.log('=== B. 声明的每条端点后端都真实存在 ===');
   for (const r of extractRoutes(src)) {
     routes.push({ method: r.isRegex ? '*' : r.method, segments: toSegments(r.raw, r.isRegex) });
   }
+  // Delegated routes include computed action paths. Record the real registrar
+  // without invoking handlers so every method/path still needs a concrete
+  // backend registration; no prefix or wildcard exception is introduced.
+  const registrar={route(method,pattern,handler){
+    assert.ok(['GET','POST','PUT','DELETE'].includes(method));
+    assert.ok(typeof pattern==='string'||pattern instanceof RegExp);if(typeof pattern==='string')assert.ok(pattern.startsWith('/api/'));
+    assert.equal(typeof handler,'function');
+    routes.push({method,segments:toSegments(pattern instanceof RegExp?pattern.source:pattern,pattern instanceof RegExp)});
+  }};
+  registerLocalProtocolRoutes(registrar);
+  registerAccountRoutes(registrar);
+  registerLocalFontRoutes(registrar);
+  registerGroupManagementRoutes(registrar,{});
 
   const missing = [];
   let checked = 0;

@@ -24,6 +24,7 @@ const MIME = {
   '.json': 'application/json; charset=utf-8', '.svg': 'image/svg+xml',
   '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg',
   '.webp': 'image/webp', '.gif': 'image/gif', '.ico': 'image/x-icon',
+  '.mp4': 'video/mp4', '.webm': 'video/webm',
   '.txt': 'text/plain; charset=utf-8', '.woff2': 'font/woff2',
 };
 
@@ -34,7 +35,7 @@ const SHELL_CSP = [
   "script-src 'self' https://o.alicdn.com https://kondius.cn",
   "style-src 'self' 'unsafe-inline'",
   "img-src 'self' data: https:",
-  "media-src 'self' data:",
+  "media-src 'self' data: blob:",
   "connect-src 'self' https://*.aliyuncs.com https://*.alicdn.com https://kondius.cn",
   "frame-ancestors 'none'",
 ].join('; ');
@@ -130,7 +131,7 @@ function safeJoinStatic(root, urlPathname) {
   return joined;
 }
 
-export function createHttpServer({ config, log = console, bus = null, staticDir, extraStaticRoots = [], panelAssetResolver = null, uiAssetResolver = null, apiGuard = null }) {
+export function createHttpServer({ config, log = console, bus = null, staticDir, extraStaticRoots = [], panelAssetResolver = null, uiAssetResolver = null, apiGuard = null, accountGateway = null }) {
   const { route, createRouteScope, matchRoute } = createScopedRouteRegistry();
   let server = null;
   let actualPort = null;
@@ -182,8 +183,12 @@ export function createHttpServer({ config, log = console, bus = null, staticDir,
   }
 
   function broadcast(event, payload) {
+    if(!sseClients.size)return;
     const frame = `event: ${event}\ndata: ${JSON.stringify(payload ?? {})}\n\n`;
     for (const res of [...sseClients]) {
+      // A suspended reader must reconnect and recover a snapshot rather than
+      // retaining an unbounded stream of tokens/logs in the server heap.
+      if(res.writableLength>2*1024*1024){sseClients.delete(res);res.destroy();continue;}
       try { res.write(frame); } catch { sseClients.delete(res); }
     }
   }
@@ -302,14 +307,44 @@ export function createHttpServer({ config, log = console, bus = null, staticDir,
     // than inside the host iframe. Apply to SVG/other document types as well.
     if (isUserPanel) headers['content-security-policy'] = `${PANEL_CSP}; sandbox allow-scripts`;
     if (isPanel && req?.headers?.origin === 'null') headers['access-control-allow-origin'] = 'null';
-    res.writeHead(200, headers);
-    fs.createReadStream(file).pipe(res);
+    const size=fs.statSync(file).size;
+    headers['content-length']=size;
+    let start=0,end=size-1,status=200;
+    if(ext==='.mp4'||ext==='.webm'){
+      headers['accept-ranges']='bytes';
+      if(req.headers.range){
+        const range=/^bytes=(\d*)-(\d*)$/.exec(String(req.headers.range).trim());
+        if(range&&(range[1]||range[2])){
+          if(range[1]){start=Number(range[1]);end=range[2]?Math.min(Number(range[2]),size-1):size-1;}
+          else{const suffix=Number(range[2]);start=Math.max(0,size-suffix);end=size-1;}
+        }else start=NaN;
+        if(!Number.isSafeInteger(start)||!Number.isSafeInteger(end)||start<0||start>=size||end<start){
+          res.writeHead(416,{...headers,'content-range':`bytes */${size}`,'content-length':0});return res.end();
+        }
+        status=206;headers['content-range']=`bytes ${start}-${end}/${size}`;headers['content-length']=end-start+1;
+      }
+    }
+    res.writeHead(status, headers);
+    if(req.method==='HEAD'||size===0)return res.end();
+    const stream=fs.createReadStream(file,{start,end});
+    stream.on('error',()=>res.destroy());res.once('close',()=>stream.destroy());stream.pipe(res);
   }
 
   async function handleHttp(req, res) {
     const urlObj = new URL(req.url, `http://${req.headers.host ?? '127.0.0.1'}`);
     const pathname = urlObj.pathname;
     try {
+      if(pathname.startsWith('/accounts/')){
+        const match=/^\/accounts\/[^/]+(\/.*)$/.exec(pathname),effectivePath=match?.[1]||'';
+        if(effectivePath.startsWith('/api/')){
+          const token=config.get().server?.token??'',provided=req.headers['x-console-token']??urlObj.searchParams.get('token');
+          if(token&&provided!==token)return sendJson(res,401,{error:'未授权',code:'CONSOLE_AUTH_REQUIRED'});
+          if(!originAllowed(req))return sendJson(res,403,{error:'请求来源不被信任（仅接受本机控制台的同源请求）'});
+          const blocked=apiGuard?.({method:req.method,pathname:effectivePath});if(blocked)return sendJson(res,blocked.status??409,blocked.body);
+        }
+        if(!accountGateway)return sendJson(res,404,{error:'当前实例未提供账号网关'});
+        return accountGateway({req,res,pathname,urlObj});
+      }
       if (pathname === '/api/console/bootstrap') return handleConsoleBootstrap(req, res);
       if (pathname === '/api/events' && req.method === 'GET') {
         // SSE must use the exact same token and origin guards as REST APIs.

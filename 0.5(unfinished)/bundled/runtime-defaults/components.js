@@ -38,6 +38,7 @@ import { detectMigrationSource, migrateFrom04 } from '../../src/kernel/migrator.
 import { completePendingDataReset, createDataResetCoordinator } from '../../src/kernel/data-reset.js';
 import { withInstanceLockTransaction } from '../../src/kernel/instance-lock.js';
 import { registerComposedConsoleRoutes, usageCost } from '../../src/console/routes.js';
+import {createExtensionUpdateController} from '../../src/console/extension-updates.js';
 import { createPersonaTemplateController } from '../../src/console/persona-templates.js';
 import { createPersonaByChatController } from '../../src/console/persona-by-chat.js';
 import { createFeedbackDraftController } from '../../src/console/feedback-draft.js';
@@ -51,6 +52,15 @@ import { createMemberEditorController } from '../../src/console/member-editor.js
 import { createPanelAdapters, registerPanelRoutes } from '../../src/console/panel-adapters.js';
 import { createSseBridge } from '../../src/console/sse-bridge.js';
 import { createPriceUpdateAdapters } from '../../src/console/price-update-adapters.js';
+import { createLocalProtocols } from '../../src/protocols/manager.js';
+import { createProtocolLogin } from '../../src/protocols/login.js';
+import { createAccountManager } from '../../src/accounts/manager.js';
+import { createAccountGateway } from '../../src/accounts/gateway.js';
+import { registerAccountRoutes } from '../../src/accounts/routes.js';
+import { registerLocalProtocolRoutes } from '../../src/console/local-protocols.js';
+import {registerLocalFontRoutes} from '../../src/console/local-fonts.js';
+import {createGroupManagement} from '../../src/management/runtime.js';
+import {registerGroupManagementRoutes} from '../../src/console/group-management.js';
 
 export {
   createKernel, createLogger, createLogPolicy, buildDefaultConfig, createConfig, createCapabilityRegistry,
@@ -92,6 +102,11 @@ export const defaultComponents = Object.freeze({
   'runtime.serviceLease': createServiceLease,
   'runtime.fetch': safeFetch,
   'runtime.priceUpdates': createPriceUpdateAdapters,
+  'runtime.localProtocols': createLocalProtocols,
+  'runtime.protocolLogin': createProtocolLogin,
+  'runtime.accounts': createAccountManager,
+  'runtime.accountGateway': createAccountGateway,
+  'console.accounts': registerAccountRoutes,
   'runtime.reset.complete': completePendingDataReset,
   'runtime.reset': createDataResetCoordinator,
   'runtime.migration.detect': detectMigrationSource,
@@ -115,6 +130,7 @@ export const defaultComponents = Object.freeze({
   'core.reply.rescue': rescueUnsentReply,
   'core.session.retryable': isRetryableError,
   'core.ingest': createIngest,
+  'core.management': createGroupManagement,
   'core.send': createSendQueue,
   'core.orchestrator': createOrchestrator,
   'core.prompt.system': buildSystemPrompt,
@@ -126,6 +142,10 @@ export const defaultComponents = Object.freeze({
   'llm.target': selectPrimaryModelTarget,
   'llm.thinking': resolveThinkingPolicy,
   'console.routes': registerComposedConsoleRoutes,
+  'console.extensionUpdates': createExtensionUpdateController,
+  'console.localProtocols': registerLocalProtocolRoutes,
+  'console.localFonts': registerLocalFontRoutes,
+  'console.management': registerGroupManagementRoutes,
   'console.personaTemplates': createPersonaTemplateController,
   'console.personaByChat': createPersonaByChatController,
   'console.feedbackDraft': createFeedbackDraftController,

@@ -15,24 +15,11 @@ npm run desktop
 
 无桌面环境时运行 `npm run server`，再打开 `http://127.0.0.1:3210`。
 
-按协议端自身说明完成安装、启动与登录后，在设置页「OneBot」填写 WebSocket 地址、HTTP API 地址及各自访问令牌。对应配置项为 `onebot.wsUrl`、`onebot.httpUrl`、`onebot.accessToken` 和 `onebot.httpAccessToken`。QQ Agent 不代管外部程序的安装、启动、账号目录或令牌提取；使用许可和客户端版本要求请查阅所选程序的说明。
+可自行从上游 Releases 下载 [NapCat 完整 Node 包](https://github.com/NapNeko/NapCatQQ/releases) 或 [SnowLuma 完整包](https://github.com/SnowLuma/SnowLuma/releases)，将 ZIP 或完整解压目录放进项目根目录的 [`protocols/`](protocols/README.md)，再到「设置 → QQ 连接」点击“启动并连接”。QQ-Agent 自动检测发行物、解压 ZIP、备份并补齐 OneBot 配置；登录、首次协议确认及客户端接入由你在上游自己的页面完成。只有显式启用“随 QQ-Agent 启动”才会自动启动所选包。安装版放置目录在可执行文件旁，具体包型和前置条件见[放置说明](protocols/README.md)。QQ-Agent 不附带、下载或再分发协议端和 QQ 客户端。
+
+已有自行运行的 OneBot 服务也可继续手动填写 WebSocket 地址、HTTP API 地址和两种访问令牌：`onebot.wsUrl`、`onebot.httpUrl`、`onebot.accessToken`、`onebot.httpAccessToken`。使用条件、许可和客户端版本要求请查阅上游说明。
 
 升级前备份配置和数据，升级后重新填写 OneBot 连接配置。旧版专属运行时配置不自动迁移，已有第三方程序和账号数据不会由本次改动删除。连接后应在测试会话验证所需的收发与媒体行为；自动测试和连接状态不代表真实 QQ 联调已完成。
-
-## 多账号（账号中心）
-
-0.5 现在也有与 0.4 相同的账号中心（一个进程、多个 QQ 号、数据完全隔离）：
-
-```bash
-npm run desktop        # 桌面：先打开账号中心（3211），点卡片进入某个号
-npm run server:accounts # 无桌面：账号中心 3211，1 号控制台 3210
-```
-
-- 原来的单号入口保留：`npm run desktop:single` / `npm run server`。
-- 每个号在独立 worker 线程里跑一个完整的 0.5 内核（自己的 data 目录、端口、
-  日志、权限、生命周期）；技能/插件代码共用，开关与配置按号独立。
-- 新建账号复制 1 号设置模板，但清空 Key/令牌/白名单/屏蔽名单/记忆。
-- 细节、入口差异、验证结果与边界见 [多账号说明](docs/multi-account.md)。
 
 ## 事实来源
 
@@ -45,6 +32,10 @@ npm run server:accounts # 无桌面：账号中心 3211，1 号控制台 3210
 - 追加式组合验收：[实现与回归证据](docs/composition-regression-evidence.md)，[可复制示例](examples/composition/README.md)。
 - 部分重叠贡献：[逐目标替换、方法包装与多层撤销验收](docs/composition-overlap-evidence.md)。
 - 决策记录：`../dsh-spec/NEXT-SESSION.md` §3（D-1~D-7）
+
+## 外观自定义
+
+界面外观支持在「设置 → 外观 → 点选编辑」中直接调整实际页面，可按单个元素、当前页面或同类组件设置，并自动保存。操作方式见[外观点选编辑](docs/appearance-visual-editor.md)。
 
 ## 依靠 AI 添加功能
 
@@ -64,4 +55,4 @@ npm run server:accounts # 无桌面：账号中心 3211，1 号控制台 3210
 ## 状态
 
 - 已实现插件宿主、控制台及桌面界面，正在继续修复和本地有头验收。最新完整回归、实际操作记录和剩余条件以 `progress.md` 及上述验收文件为准。
-- 外部协议端和 QQ 客户端由用户独立管理；当前版本不提供便携运行时安装、进程管理或登录态迁移。
+- 支持检测和启动用户自行放入的两种完整协议端发行包，管理自己启动的进程树；不会分发第三方运行时、接管已运行的外部进程或迁移 QQ 登录态。真实 QQ 登录与收发联调仍须使用用户自己的账号完成。

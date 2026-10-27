@@ -2,9 +2,10 @@ import {getRefreshInterval} from '../panels/refresh-policy.js';
 import { RpcBridge } from './rpc-bridge.js';
 import { createPanelViewState } from './panel-view-state.js';
 import {settingsSaveIdentity} from './settings-save-lifecycle.js';
+import {currentAccountScope} from '../panels/account-scope.js';
 // 相对路径（而非 /panels/theme.js）：浏览器解析为 /panels/theme.js，
 // Node 侧也能解析到 ui/panels/theme.js —— 用绝对路径会让 Node 找 C:\panels\theme.js。
-import { getCurrentTheme, writeTheme } from '../panels/theme.js';
+import { getCurrentTheme, writeTheme, writeVisualTheme } from '../panels/theme.js';
 import { animateMount } from '../panels/motion.js';
 
 const ID=/^[A-Za-z0-9_-]{1,64}$/;
@@ -32,30 +33,41 @@ function normalize(def) {
 }
 
 export class PanelRegistry {
-  constructor({root='/panels',frameHost,api,onNotify,onUserCall,onUserConfig,onOpenExternal,onPublishQuote,onPublishFeedback,onManageConsoleToken,onUpdateAction,onPublishMarket,onAuthenticateMarket,onCaptchaDiagnostics,onDestructiveProgress,viewState=createPanelViewState()}={}) {
-    this.root=root.replace(/\/$/,'');this.frameHost=frameHost;this.api=api;this.onNotify=onNotify;this.onUserCall=onUserCall;this.onUserConfig=onUserConfig;this.onOpenExternal=onOpenExternal;this.onPublishQuote=onPublishQuote;
+  constructor({root=currentAccountScope.base+'/panels',frameHost,api,controlApi=api,onNotify,onUserCall,onUserConfig,onOpenExternal,onPublishQuote,onPublishFeedback,onManageConsoleToken,onUpdateAction,onPublishMarket,onAuthenticateMarket,onCaptchaDiagnostics,onDestructiveProgress,viewState=createPanelViewState()}={}) {
+    this.root=root.replace(/\/$/,'');this.frameHost=frameHost;this.api=api;this.controlApi=controlApi;this.onNotify=onNotify;this.onUserCall=onUserCall;this.onUserConfig=onUserConfig;this.onOpenExternal=onOpenExternal;this.onPublishQuote=onPublishQuote;
     this.onPublishFeedback=onPublishFeedback;
     this.onManageConsoleToken=onManageConsoleToken;this.onUpdateAction=onUpdateAction;
     this.onPublishMarket=onPublishMarket;this.onCaptchaDiagnostics=onCaptchaDiagnostics;
     this.onAuthenticateMarket=onAuthenticateMarket;
     this.onDestructiveProgress=onDestructiveProgress;
     this.defs=new Map();this.current=null;this.viewState=viewState;
+    this.viewportWindow=frameHost?.ownerDocument?.defaultView??globalThis.window;
+    this.viewportFrame=0;
+    this.viewportResize=()=>{
+      if(this.viewportFrame)return;
+      if(this.viewportWindow?.requestAnimationFrame)this.viewportFrame=this.viewportWindow.requestAnimationFrame(()=>{this.viewportFrame=0;this.publishViewport();});
+      else this.publishViewport();
+    };
+    this.viewportWindow?.addEventListener?.('resize',this.viewportResize);
   }
+  viewportSize(){const win=this.viewportWindow;return{width:Math.max(1,Math.round(win?.innerWidth||1)),height:Math.max(1,Math.round(win?.innerHeight||1))};}
+  publishViewport(){if(this.current?.definition?.kind==='bundled'&&this.current.id==='settings')this.current.bridge.event('viewport-size',this.viewportSize());}
   register(def) { const panel=normalize(def);if(this.defs.has(panel.id))throw new Error(`重复面板 id：${panel.id}`);this.defs.set(panel.id,panel);return panel; }
-  async mount(id,{force=false,section=null}={}) {
+  async mount(id,{force=false,section=null,connectQQ=null}={}) {
     const definition=this.defs.get(id);if(!definition)throw new Error('未知面板');
     // A host shortcut targets the existing settings UI without inspecting its sandbox
     // or replacing an open form. Other panels receive no settings navigation event.
     const settingsSection=definition.kind==='bundled'&&(id==='settings'||definition.navigation?.role==='configuration')&&['models','access','onebot'].includes(section)?section:null;
+    const settingsTarget={section:settingsSection,...(settingsSection==='onebot'&&(connectQQ===true||typeof connectQQ==='string'&&/^\d{5,20}$/.test(connectQQ))?{connectQQ}: {})};
     const active=this.current;
     if(!force&&active?.id===id&&active.definition===definition&&active.bridge.ready&&!active.bridge.closed&&active.frame.isConnected!==false){
-      if(settingsSection)active.bridge.event('settings-section',{section:settingsSection});
+      if(settingsSection)active.bridge.event('settings-section',settingsTarget);
       return active.frame;
     }
     await this.unmount();
     const frame=document.createElement('iframe');frame.title=definition.title;
     // Animate the host-owned frame only; a plugin's sandbox remains opaque.
-    frame.addEventListener('load',()=>{if(this.current?.frame===frame)animateMount(frame);},{once:true});
+    frame.addEventListener('load',()=>{if(this.current?.frame===frame&&document.documentElement?.dataset?.accountHandoff!=='incoming')animateMount(frame);},{once:true});
     // user URL 绑定面板 id 和加载代际；宿主只服务其专用 ui/ 资产。
     const src=(definition.kind==='user'&&definition.ownerId)
       ?`${this.root}/u/${encodeURIComponent(definition.id)}/${encodeURIComponent(definition.generation)}/${definition.entry}`
@@ -71,11 +83,12 @@ export class PanelRegistry {
     const stateLease=this.viewState.open(definition);
     const viewState=stateLease?{read:()=>this.viewState.read(stateLease),leave:id=>this.viewState.leave(stateLease,id),finish:(id,data)=>this.viewState.finish(stateLease,id,data),expire:()=>this.viewState.expire(stateLease),cancel:id=>this.viewState.cancel?.(stateLease,id)}:null;
     const bridge=new RpcBridge({
-      viewState,
+      viewState,controlApi:this.controlApi,
       frame,api:this.api,manifest:definition,onNotify:this.onNotify,onUserCall:this.onUserCall,onUserConfig:this.onUserConfig,onOpenExternal:this.onOpenExternal,onPublishQuote:this.onPublishQuote,onPublishFeedback:this.onPublishFeedback,onManageConsoleToken:this.onManageConsoleToken,onUpdateAction:this.onUpdateAction,onPublishMarket:this.onPublishMarket,onAuthenticateMarket:this.onAuthenticateMarket,onCaptchaDiagnostics:this.onCaptchaDiagnostics,onDestructiveProgress:this.onDestructiveProgress,
-      onReady:()=>{ try{ bridge.event('theme',getCurrentTheme());bridge.event('refresh-policy',{interval:getRefreshInterval()});if(settingsSection)bridge.event('settings-section',{section:settingsSection}); }catch{/* 推送失败不影响面板功能 */} },
+      onReady:()=>{ try{ bridge.event('theme',getCurrentTheme());if(definition.kind==='bundled'&&id==='settings')bridge.event('viewport-size',this.viewportSize());bridge.event('refresh-policy',{interval:getRefreshInterval()});this.onAppearance?.('appearance.ready',null,definition.id);if(this.visualEditorState)bridge.event('visual-editor',this.visualEditorState());if(settingsSection)bridge.event('settings-section',settingsTarget); }catch{/* 推送失败不影响面板功能 */} },
       onTheme:(tokens)=>{ this.applyThemeEverywhere(tokens); },
     });
+    bridge.onAppearance=this.onAppearance;
     this.current={id,frame,bridge,definition};return frame;
   }
   emit(name,payload) { if(this.current)this.current.bridge.event(name,payload); }
@@ -83,6 +96,11 @@ export class PanelRegistry {
   applyThemeEverywhere(tokens) {
     const t=writeTheme(tokens);
     this.emit('theme',t);
+    return t;
+  }
+  applyVisualEverywhere(visual){
+    const t=writeVisualTheme(visual);
+    this.emit(this.current?.definition?.kind==='user'?'theme':'visual-style',this.current?.definition?.kind==='user'?t:t.visual);
     return t;
   }
   async replace(definitions,{isCurrent=()=>true}={}) {
@@ -96,8 +114,9 @@ export class PanelRegistry {
     if(isCurrent())this.defs=next;
   }
   async flush() { if(this.current)await this.current.bridge.flush(); }
+  whenContentReady(options={}) { return this.current?.bridge.whenContentReady(options)??Promise.resolve({status:'empty'}); }
   beforeUnload(event){return this.current?.bridge.beforeUnload(event)??false;}
-  dispose(){const current=this.current;this.current=null;if(current){current.bridge.close();current.frame.remove();}}
+  dispose(){this.viewportWindow?.removeEventListener?.('resize',this.viewportResize);if(this.viewportFrame)this.viewportWindow?.cancelAnimationFrame?.(this.viewportFrame);this.viewportFrame=0;const current=this.current;this.current=null;if(current){current.bridge.close();current.frame.remove();}}
   async unmount({revoke=false}={}) {
     if(!this.current)return;
     const current=this.current;

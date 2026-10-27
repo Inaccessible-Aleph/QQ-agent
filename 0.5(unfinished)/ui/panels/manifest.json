@@ -135,6 +135,59 @@
       ]
     },
     {
+      "id": "rules",
+      "title": "规则",
+      "description": "事件、条件与自动操作",
+      "kind": "bundled",
+      "permissions": [],
+      "viewState": {
+        "keys": [
+          "editor"
+        ],
+        "bootScripts": [
+          "panel.js"
+        ]
+      },
+      "api": [
+        {
+          "method": "POST",
+          "path": "/api/management"
+        },
+        {
+          "method": "GET",
+          "path": "/api/management"
+        },
+        {
+          "method": "GET",
+          "path": "/api/management/groups"
+        },
+        {
+          "method": "POST",
+          "path": "/api/management/simulate"
+        },
+        {
+          "method": "POST",
+          "path": "/api/management/validate"
+        },
+        {
+          "method": "GET",
+          "path": "/api/management/runs"
+        },
+        {
+          "method": "GET",
+          "path": "/api/management/runs/:id"
+        },
+        {
+          "method": "GET",
+          "path": "/api/onebot/groups"
+        },
+        {
+          "method": "GET",
+          "path": "/api/onebot/friends"
+        }
+      ]
+    },
+    {
       "id": "memory",
       "title": "记忆",
       "kind": "bundled",
@@ -295,6 +348,18 @@
         {
           "method": "GET",
           "path": "/api/extensions/authoring-context"
+        },
+        {
+          "method": "GET",
+          "path": "/api/extensions/updates"
+        },
+        {
+          "method": "POST",
+          "path": "/api/extensions/updates/check"
+        },
+        {
+          "method": "POST",
+          "path": "/api/extensions/:id/update"
         }
       ]
     },
@@ -359,6 +424,18 @@
         {
           "method": "GET",
           "path": "/api/extensions/authoring-context"
+        },
+        {
+          "method": "GET",
+          "path": "/api/extensions/updates"
+        },
+        {
+          "method": "POST",
+          "path": "/api/extensions/updates/check"
+        },
+        {
+          "method": "POST",
+          "path": "/api/extensions/:id/update"
         }
       ]
     },
@@ -411,6 +488,74 @@
         ]
       },
       "api": [
+        {
+          "method": "GET",
+          "path": "/api/local-protocols"
+        },
+        {
+          "method": "POST",
+          "path": "/api/local-protocols/rescan"
+        },
+        {
+          "method": "POST",
+          "path": "/api/local-protocols/open-folder"
+        },
+        {
+          "method": "POST",
+          "path": "/api/local-protocols/start"
+        },
+        {
+          "method": "POST",
+          "path": "/api/local-protocols/stop"
+        },
+        {
+          "method": "POST",
+          "path": "/api/local-protocols/settings"
+        },
+        {
+          "method": "GET",
+          "path": "/api/local-protocols/output"
+        },
+        {
+          "method": "GET",
+          "path": "/api/local-protocols/login"
+        },
+        {
+          "method": "GET",
+          "path": "/api/accounts"
+        },
+        {
+          "method": "POST",
+          "path": "/api/accounts/start"
+        },
+        {
+          "method": "POST",
+          "path": "/api/accounts/stop"
+        },
+        {
+          "method": "POST",
+          "path": "/api/accounts/remove"
+        },
+        {
+          "method": "POST",
+          "path": "/api/local-protocols/login/connect"
+        },
+        {
+          "method": "POST",
+          "path": "/api/local-protocols/login/refresh"
+        },
+        {
+          "method": "POST",
+          "path": "/api/local-protocols/login/inject"
+        },
+        {
+          "method": "POST",
+          "path": "/api/local-protocols/login/close"
+        },
+        {
+          "method": "POST",
+          "path": "/api/local-protocols/login/visibility"
+        },
         {
           "method": "GET",
           "path": "/api/blocklist-members"
@@ -632,6 +777,22 @@
           "path": "/api/uikit/background"
         },
         {
+          "method": "POST",
+          "path": "/api/uikit/background/uploads"
+        },
+        {
+          "method": "POST",
+          "path": "/api/uikit/background/uploads/:id/chunk"
+        },
+        {
+          "method": "POST",
+          "path": "/api/uikit/background/uploads/:id/complete"
+        },
+        {
+          "method": "DELETE",
+          "path": "/api/uikit/background/uploads/:id"
+        },
+        {
           "method": "GET",
           "path": "/api/uikit/background/:id"
         },
@@ -642,6 +803,14 @@
         {
           "method": "POST",
           "path": "/api/providers/test-chat"
+        },
+        {
+          "method": "GET",
+          "path": "/api/ui/fonts"
+        },
+        {
+          "method": "GET",
+          "path": "/api/ui/fonts/refresh"
         }
       ]
     },
